@@ -64,6 +64,7 @@
 #   2019-07-08 GTR  Set IP for all recording formats
 #   2019-10-31 GTR  Set IP and shared secret for bbb-webhooks
 #   2019-11-09 GTR  Keep HTML5 client logs permissions when cleaning logs
+#   2020-06-03 AG   Remove warning about guest policy and html5 client support
 
 #set -x
 #set -e
@@ -878,20 +879,6 @@ check_configuration() {
             echo "#"
         fi  
       fi
-    fi
-
-    GUEST_POLICY=$(cat $BBB_WEB_CONFIG | grep -v '#' | sed -n '/^defaultGuestPolicy/{s/.*=//;p}')
-    if [ "$GUEST_POLICY" == "ASK_MODERATOR" ]; then
-        echo
-        echo "# Warning: defaultGuestPolicy is set to ASK_MODERATOR in"
-        echo "#    $BBB_WEB_CONFIG"
-        echo "# This is not yet supported yet the HTML5 client."
-        echo "#"
-        echo "# To revert it to ALWAYS_ALLOW, see"
-        echo "#"
-        echo "#   $SUDO sed -i s/^defaultGuestPolicy=.*$/defaultGuestPolicy=ALWAYS_ALLOW/g $SERVLET_DIR/WEB-INF/classes/bigbluebutton.properties"
-        echo "#"
-        echo
     fi
 
     if [ -f $HTML5_CONFIG ]; then
