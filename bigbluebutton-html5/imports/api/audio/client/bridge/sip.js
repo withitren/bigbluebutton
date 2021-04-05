@@ -1,4 +1,3 @@
-import browser from 'browser-detect';
 import BaseAudioBridge from './base';
 import logger from '/imports/startup/client/logger';
 import {
@@ -17,12 +16,16 @@ import { Tracker } from 'meteor/tracker';
 import VoiceCallStates from '/imports/api/voice-call-states';
 import CallStateOptions from '/imports/api/voice-call-states/utils/callStates';
 import Auth from '/imports/ui/services/auth';
+import Settings from '/imports/ui/services/settings';
+import Storage from '/imports/ui/services/storage/session';
+import browserInfo from '/imports/utils/browserInfo';
 
 const MEDIA = Meteor.settings.public.media;
 const MEDIA_TAG = MEDIA.mediaTag;
 const CALL_TRANSFER_TIMEOUT = MEDIA.callTransferTimeout;
 const CALL_HANGUP_TIMEOUT = MEDIA.callHangupTimeout;
 const CALL_HANGUP_MAX_RETRIES = MEDIA.callHangupMaximumRetries;
+const SIPJS_HACK_VIA_WS = MEDIA.sipjsHackViaWs;
 const IPV4_FALLBACK_DOMAIN = Meteor.settings.public.app.ipv4FallbackDomain;
 const CALL_CONNECT_TIMEOUT = 20000;
 const ICE_NEGOTIATION_TIMEOUT = 20000;
@@ -30,6 +33,20 @@ const AUDIO_SESSION_NUM_KEY = 'AudioSessionNumber';
 const USER_AGENT_RECONNECTION_ATTEMPTS = 3;
 const USER_AGENT_RECONNECTION_DELAY_MS = 5000;
 const USER_AGENT_CONNECTION_TIMEOUT_MS = 5000;
+const ICE_GATHERING_TIMEOUT = MEDIA.iceGatheringTimeout || 5000;
+const BRIDGE_NAME = 'sip';
+const WEBSOCKET_KEEP_ALIVE_INTERVAL = MEDIA.websocketKeepAliveInterval || 0;
+const WEBSOCKET_KEEP_ALIVE_DEBOUNCE = MEDIA.websocketKeepAliveDebounce || 10;
+const TRACE_SIP = MEDIA.traceSip || false;
+const AUDIO_MICROPHONE_CONSTRAINTS = Meteor.settings.public.app.defaultSettings
+  .application.microphoneConstraints;
+const SDP_SEMANTICS = MEDIA.sdpSemantics;
+
+const DEFAULT_INPUT_DEVICE_ID = 'default';
+const DEFAULT_OUTPUT_DEVICE_ID = 'default';
+
+const INPUT_DEVICE_ID_KEY = 'audioInputDeviceId';
+const OUTPUT_DEVICE_ID_KEY = 'audioOutputDeviceId';
 
 const getAudioSessionNumber = () => {
   let currItem = parseInt(sessionStorage.getItem(AUDIO_SESSION_NUM_KEY), 10);
@@ -72,10 +89,97 @@ class SIPSession {
     this.reconnectAttempt = reconnectAttempt;
     this.currentSession = null;
     this.remoteStream = null;
-    this.inputDeviceId = null;
+    this._inputDeviceId = null;
+    this._outputDeviceId = null;
     this._hangupFlag = false;
     this._reconnecting = false;
     this._currentSessionState = null;
+  }
+
+  get inputStream() {
+    if (this.currentSession && this.currentSession.sessionDescriptionHandler) {
+      return this.currentSession.sessionDescriptionHandler.localMediaStream;
+    }
+    return null;
+  }
+
+  getAudioConstraints() {
+    const userSettingsConstraints = Settings.application.microphoneConstraints;
+    const audioDeviceConstraints = userSettingsConstraints
+      || AUDIO_MICROPHONE_CONSTRAINTS || {};
+
+    const matchConstraints = this.filterSupportedConstraints(
+      audioDeviceConstraints,
+    );
+
+    if (this.inputDeviceId) {
+      matchConstraints.deviceId = this.inputDeviceId;
+    }
+
+    return matchConstraints;
+  }
+
+  setInputStream(stream) {
+    if (!this.currentSession
+      || !this.currentSession.sessionDescriptionHandler
+    ) return;
+
+
+    this.currentSession.sessionDescriptionHandler.setLocalMediaStream(stream);
+  }
+
+
+  liveChangeInputDevice(deviceId) {
+    this.inputDeviceId = deviceId;
+
+    const constraints = {
+      audio: this.getAudioConstraints(),
+    };
+
+    this.inputStream.getAudioTracks().forEach(t => t.stop());
+
+    return navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+      this.setInputStream(stream);
+    });
+  }
+
+  get inputDeviceId() {
+    if (!this._inputDeviceId) {
+      const stream = this.inputStream;
+
+      if (stream) {
+        const track = stream.getAudioTracks().find(
+          t => t.getSettings().deviceId,
+        );
+
+        if (track && (typeof track.getSettings === 'function')) {
+          const { deviceId } = track.getSettings();
+          return deviceId || DEFAULT_INPUT_DEVICE_ID;
+        }
+      }
+    }
+
+    return (this._inputDeviceId || DEFAULT_INPUT_DEVICE_ID);
+  }
+
+  set inputDeviceId(deviceId) {
+    this._inputDeviceId = deviceId;
+  }
+
+  get outputDeviceId() {
+    if (!this._outputDeviceId) {
+      const audioElement = document.querySelector(MEDIA_TAG);
+      if (audioElement) {
+        return audioElement.sinkId;
+      }
+    }
+
+    return this._outputDeviceId || DEFAULT_OUTPUT_DEVICE_ID;
+  }
+
+  set outputDeviceId(deviceId) {
+    this._outputDeviceId = deviceId;
+    Storage.setItem(OUTPUT_DEVICE_ID_KEY, deviceId);
   }
 
   joinAudio({ isListenOnly, extension, inputDeviceId }, managerCallback) {
@@ -170,6 +274,7 @@ class SIPSession {
           status: this.baseCallStates.failed,
           error: 1008,
           bridgeError: 'Timeout on call transfer',
+          bridge: BRIDGE_NAME,
         });
 
         this.exitAudio();
@@ -178,18 +283,13 @@ class SIPSession {
       }, CALL_TRANSFER_TIMEOUT);
 
       // This is is the call transfer code ask @chadpilkey
-      if (this.sessionSupportRTPPayloadDtmf(this.currentSession)) {
-        this.currentSession.sessionDescriptionHandler.sendDtmf(1);
-      } else {
-        // RFC4733 not supported , sending DTMF through INFO
-        logger.debug({
-          logCode: 'sip_js_rtp_payload_dtmf_not_supported',
-          extraInfo: {
-            callerIdName: this.user.callerIdName,
-          },
-        }, 'Browser do not support payload dtmf, using INFO instead');
-        this.sendDtmf(1);
-      }
+      logger.debug({
+        logCode: 'sip_js_rtp_payload_send_dtmf',
+        extraInfo: {
+          callerIdName: this.user.callerIdName,
+        },
+      }, 'Sending DTMF INFO to transfer user');
+      this.sendDtmf(1);
 
       Tracker.autorun((c) => {
         trackerControl = c;
@@ -296,6 +396,7 @@ class SIPSession {
               status: this.baseCallStates.failed,
               error: 1006,
               bridgeError: 'Timeout on call hangup',
+              bridge: BRIDGE_NAME,
             });
             return reject(this.baseErrorCodes.REQUEST_TIMEOUT);
           }
@@ -309,12 +410,16 @@ class SIPSession {
     });
   }
 
-  onBeforeUnload() {
-    if (this.userAgent) {
+  stopUserAgent() {
+    if (this.userAgent && (typeof this.userAgent.stop === 'function')) {
       return this.userAgent.stop();
     }
-
     return Promise.resolve();
+  }
+
+  onBeforeUnload() {
+    this.userRequestedHangup = true;
+    return this.stopUserAgent();
   }
 
   createUserAgent(iceServers) {
@@ -364,15 +469,20 @@ class SIPSession {
         transportOptions: {
           server: `${(protocol === 'https:' ? 'wss://' : 'ws://')}${hostname}/ws?${token}`,
           connectionTimeout: USER_AGENT_CONNECTION_TIMEOUT_MS,
+          keepAliveInterval: WEBSOCKET_KEEP_ALIVE_INTERVAL,
+          keepAliveDebounce: WEBSOCKET_KEEP_ALIVE_DEBOUNCE,
+          traceSip: TRACE_SIP,
         },
         sessionDescriptionHandlerFactoryOptions: {
           peerConnectionConfiguration: {
             iceServers,
+            sdpSemantics: SDP_SEMANTICS,
           },
         },
         displayName: callerIdName,
         register: false,
         userAgentString: 'BigBlueButton',
+        hackViaWs: SIPJS_HACK_VIA_WS,
       });
 
       const handleUserAgentConnection = () => {
@@ -393,14 +503,13 @@ class SIPSession {
           let bridgeError;
 
           if (!this._reconnecting) {
-
             logger.info({
               logCode: 'sip_js_session_ua_disconnected',
               extraInfo: {
                 callerIdName: this.user.callerIdName,
               },
             }, 'User agent disconnected: trying to reconnect...'
-              + ` (userHangup = ${!!this.userRequestedHangup})`);
+            + ` (userHangup = ${!!this.userRequestedHangup})`);
 
             logger.info({
               logCode: 'sip_js_session_ua_reconnecting',
@@ -424,10 +533,14 @@ class SIPSession {
                 error = 1002;
                 bridgeError = 'Websocket failed to connect';
               }
+
+              this.stopUserAgent();
+
               this.callback({
                 status: this.baseCallStates.failed,
                 error,
                 bridgeError,
+                bridge: BRIDGE_NAME,
               });
               reject(this.baseErrorCodes.CONNECTION_ERROR);
             });
@@ -459,12 +572,15 @@ class SIPSession {
 
         const code = getErrorCode(error);
 
-
+        // Websocket's 1006 is currently mapped to BBB's 1002
         if (code === 1006) {
+          this.stopUserAgent();
+
           this.callback({
             status: this.baseCallStates.failed,
-            error: 1006,
+            error: 1002,
             bridgeError: 'Websocket failed to connect',
+            bridge: BRIDGE_NAME,
           });
           return reject({
             type: this.baseErrorCodes.CONNECTION_ERROR,
@@ -481,18 +597,21 @@ class SIPSession {
 
           resolve();
         }).catch(() => {
+          this.stopUserAgent();
+
           logger.info({
             logCode: 'sip_js_session_ua_disconnected',
             extraInfo: {
               callerIdName: this.user.callerIdName,
             },
           }, 'User agent failed to reconnect after'
-            + ` ${USER_AGENT_RECONNECTION_ATTEMPTS} attemps`);
+          + ` ${USER_AGENT_RECONNECTION_ATTEMPTS} attemps`);
 
           this.callback({
             status: this.baseCallStates.failed,
             error: 1002,
             bridgeError: 'Websocket failed to connect',
+            bridge: BRIDGE_NAME,
           });
 
           reject({
@@ -519,19 +638,26 @@ class SIPSession {
 
       this._reconnecting = true;
 
-      setTimeout(() => {
-        this.userAgent.reconnect().then(() => {
-          this._reconnecting = false;
-          resolve();
-        }).catch(() => {
+      logger.info({
+        logCode: 'sip_js_session_ua_reconnection_attempt',
+        extraInfo: {
+          callerIdName: this.user.callerIdName,
+        },
+      }, `User agent reconnection attempt ${attempts}`);
+
+      this.userAgent.reconnect().then(() => {
+        this._reconnecting = false;
+        resolve();
+      }).catch(() => {
+        setTimeout(() => {
           this._reconnecting = false;
           this.reconnect(++attempts).then(() => {
             resolve();
           }).catch((error) => {
             reject(error);
           });
-        });
-      }, USER_AGENT_RECONNECTION_DELAY_MS);
+        }, USER_AGENT_RECONNECTION_DELAY_MS);
+      });
     });
   }
 
@@ -550,18 +676,17 @@ class SIPSession {
 
       const target = SIP.UserAgent.makeURI(`sip:${callExtension}@${hostname}`);
 
-      const audioDeviceConstraint = this.inputDeviceId
-        ? { deviceId: { exact: this.inputDeviceId } }
-        : true;
+      const matchConstraints = this.getAudioConstraints();
 
       const inviterOptions = {
         sessionDescriptionHandlerOptions: {
           constraints: {
             audio: isListenOnly
               ? false
-              : audioDeviceConstraint,
+              : matchConstraints,
             video: false,
           },
+          iceGatheringTimeout: ICE_GATHERING_TIMEOUT,
         },
         sessionDescriptionHandlerModifiersPostICEGathering:
           [stripMDnsCandidates],
@@ -643,7 +768,7 @@ class SIPSession {
             },
           }, 'Audio call - setup remote media');
 
-          this.callback({ status: this.baseCallStates.started });
+          this.callback({ status: this.baseCallStates.started, bridge: BRIDGE_NAME });
           resolve();
         }
       };
@@ -655,6 +780,7 @@ class SIPSession {
           status: this.baseCallStates.failed,
           error: 1006,
           bridgeError: `Call timed out on start after ${CALL_CONNECT_TIMEOUT / 1000}s`,
+          bridge: BRIDGE_NAME,
         });
 
         this.exitAudio();
@@ -674,6 +800,7 @@ class SIPSession {
               error: 1010,
               bridgeError: 'ICE negotiation timeout after '
                 + `${ICE_NEGOTIATION_TIMEOUT / 1000}s`,
+              bridge: BRIDGE_NAME,
             });
 
             this.exitAudio();
@@ -709,6 +836,7 @@ class SIPSession {
           error: 1007,
           bridgeError: 'ICE negotiation failed. Current state '
             + `- ${peer.iceConnectionState}`,
+          bridge: BRIDGE_NAME,
         });
       };
 
@@ -720,13 +848,14 @@ class SIPSession {
               callerIdName: this.user.callerIdName,
             },
           }, 'ICE connection closed');
-        }
+        } else return;
 
         this.callback({
           status: this.baseCallStates.failed,
           error: 1012,
           bridgeError: 'ICE connection closed. Current state -'
             + `${peer.iceConnectionState}`,
+          bridge: BRIDGE_NAME,
         });
       };
 
@@ -743,16 +872,52 @@ class SIPSession {
           onconnectionstatechange: (event) => {
             const peer = event.target;
 
+            logger.info({
+              logCode: 'sip_js_connection_state_change',
+              extraInfo: {
+                connectionStateChange: peer.connectionState,
+                callerIdName: this.user.callerIdName,
+              },
+            }, 'ICE connection state change - Current connection state - '
+            + `${peer.connectionState}`);
+
             switch (peer.connectionState) {
+              case 'failed':
+                // Chrome triggers 'failed' for connectionState event, only
+                handleIceNegotiationFailed(peer);
+                break;
+              default:
+                break;
+            }
+          },
+          oniceconnectionstatechange: (event) => {
+            const peer = event.target;
+
+            switch (peer.iceConnectionState) {
+              case 'completed':
               case 'connected':
+                if (iceCompleted) {
+                  logger.info({
+                    logCode: 'sip_js_ice_connection_success_after_success',
+                    extraInfo: {
+                      currentState: peer.connectionState,
+                      callerIdName: this.user.callerIdName,
+                    },
+                  }, 'ICE connection success, but user is already connected'
+                  + 'ignoring it...'
+                  + `${peer.iceConnectionState}`);
+
+                  return;
+                }
+
                 logger.info({
                   logCode: 'sip_js_ice_connection_success',
                   extraInfo: {
                     currentState: peer.connectionState,
                     callerIdName: this.user.callerIdName,
                   },
-                }, 'ICE connection success. Current state - '
-                    + `${peer.iceConnectionState}`);
+                }, 'ICE connection success. Current ICE Connection state - '
+                + `${peer.iceConnectionState}`);
 
                 clearTimeout(callTimeout);
                 clearTimeout(iceNegotiationTimeout);
@@ -777,13 +942,14 @@ class SIPSession {
         };
       };
 
-      const handleSessionTerminated = (message, cause) => {
+      const handleSessionTerminated = (message) => {
         clearTimeout(callTimeout);
         clearTimeout(iceNegotiationTimeout);
 
-        if (!message && !cause && !!this.userRequestedHangup) {
+        if (!message && !!this.userRequestedHangup) {
           return this.callback({
             status: this.baseCallStates.ended,
+            bridge: BRIDGE_NAME,
           });
         }
 
@@ -791,22 +957,27 @@ class SIPSession {
         // any possile errors
         if (!this._currentSessionState) return false;
 
+
+        let mappedCause;
+        let cause;
+        if (!iceCompleted) {
+          mappedCause = '1004';
+          cause = 'ICE error';
+        } else {
+          cause = 'Audio Conference Error';
+          mappedCause = '1005';
+        }
+
         logger.error({
           logCode: 'sip_js_call_terminated',
           extraInfo: { cause, callerIdName: this.user.callerIdName },
         }, `Audio call terminated. cause=${cause}`);
 
-        let mappedCause;
-        if (!iceCompleted) {
-          mappedCause = '1004';
-        } else {
-          mappedCause = '1005';
-        }
-
         return this.callback({
           status: this.baseCallStates.failed,
           error: mappedCause,
           bridgeError: cause,
+          bridge: BRIDGE_NAME,
         });
       };
 
@@ -857,6 +1028,90 @@ class SIPSession {
       resolve();
     });
   }
+
+  /**
+   * Filter constraints set in audioDeviceConstraints, based on
+   * constants supported by browser. This avoids setting a constraint
+   * unsupported by browser. In currently safari version (13+), for example,
+   * setting an unsupported constraint crashes the audio.
+   * @param  {Object} audioDeviceConstraints Constraints to be set
+   * see: https://developer.mozilla.org/en-US/docs/Web/API/MediaTrackConstraints
+   * @return {Object}                        A new Object of the same type as
+   * input, containing only the supported constraints.
+   */
+  filterSupportedConstraints(audioDeviceConstraints) {
+    try {
+      const matchConstraints = {};
+      const supportedConstraints = navigator
+        .mediaDevices.getSupportedConstraints() || {};
+      Object.entries(audioDeviceConstraints).forEach(
+        ([constraintName, constraintValue]) => {
+          if (supportedConstraints[constraintName]) {
+            matchConstraints[constraintName] = constraintValue;
+          }
+        }
+      );
+
+      return matchConstraints;
+    } catch (error) {
+      logger.error({
+        logCode: 'sipjs_unsupported_audio_constraint_error',
+        extraInfo: {
+          callerIdName: this.user.callerIdName,
+        },
+      }, 'SIP.js unsupported constraint error');
+      return {};
+    }
+  }
+
+  /**
+   * Update audio constraints for current local MediaStream (microphone)
+   * @param  {Object}  constraints MediaTrackConstraints object. See:
+   * https://developer.mozilla.org/en-US/docs/Web/API/MediaTrackConstraints
+   * @return {Promise}             A Promise for this process
+   */
+  async updateAudioConstraints(constraints) {
+    try {
+      if (typeof constraints !== 'object') return;
+
+      logger.info({
+        logCode: 'sipjs_update_audio_constraint',
+        extraInfo: {
+          callerIdName: this.user.callerIdName,
+        },
+      }, 'SIP.js updating audio constraint');
+
+      const matchConstraints = this.filterSupportedConstraints(constraints);
+
+      //Chromium bug - see: https://bugs.chromium.org/p/chromium/issues/detail?id=796964&q=applyConstraints&can=2
+      const { isChrome } = browserInfo;
+
+      if (isChrome) {
+        matchConstraints.deviceId = this.inputDeviceId;
+
+        const stream = await navigator.mediaDevices.getUserMedia(
+          { audio: matchConstraints },
+        );
+
+        this.currentSession.sessionDescriptionHandler
+          .setLocalMediaStream(stream);
+      } else {
+        const { localMediaStream } = this.currentSession
+          .sessionDescriptionHandler;
+
+        localMediaStream.getAudioTracks().forEach(
+          track => track.applyConstraints(matchConstraints),
+        );
+      }
+    } catch (error) {
+      logger.error({
+        logCode: 'sipjs_audio_constraint_error',
+        extraInfo: {
+          callerIdName: this.user.callerIdName,
+        },
+      }, 'SIP.js failed to update audio constraint');
+    }
+  }
 }
 
 export default class SIPBridge extends BaseAudioBridge {
@@ -892,8 +1147,62 @@ export default class SIPBridge extends BaseAudioBridge {
     window.clientLogger = logger;
   }
 
-  get inputDeviceId () {
-    return this.media.inputDevice ? this.media.inputDevice.inputDeviceId : null;
+  get inputDeviceId() {
+    const sessionInputDeviceId = Storage.getItem(INPUT_DEVICE_ID_KEY);
+
+    if (sessionInputDeviceId) {
+      return sessionInputDeviceId;
+    }
+
+    if (this.media.inputDeviceId) {
+      return this.media.inputDeviceId;
+    }
+
+    if (this.activeSession) {
+      return this.activeSession.inputDeviceId;
+    }
+
+    return DEFAULT_INPUT_DEVICE_ID;
+  }
+
+  set inputDeviceId(deviceId) {
+    Storage.setItem(INPUT_DEVICE_ID_KEY, deviceId);
+    this.media.inputDeviceId = deviceId;
+
+    if (this.activeSession) {
+      this.activeSession.inputDeviceId = deviceId;
+    }
+  }
+
+  get outputDeviceId() {
+    const sessionOutputDeviceId = Storage.getItem(OUTPUT_DEVICE_ID_KEY);
+
+    if (sessionOutputDeviceId) {
+      return sessionOutputDeviceId;
+    }
+
+    if (this.media.outputDeviceId) {
+      return this.media.outputDeviceId;
+    }
+
+    if (this.activeSession) {
+      return this.activeSession.outputDeviceId;
+    }
+
+    return DEFAULT_OUTPUT_DEVICE_ID;
+  }
+
+  set outputDeviceId(deviceId) {
+    Storage.setItem(OUTPUT_DEVICE_ID_KEY, deviceId);
+    this.media.outputDeviceId = deviceId;
+
+    if (this.activeSession) {
+      this.activeSession.outputDeviceId = deviceId;
+    }
+  }
+
+  get inputStream() {
+    return this.activeSession ? this.activeSession.inputStream : null;
   }
 
   joinAudio({ isListenOnly, extension }, managerCallback) {
@@ -910,12 +1219,12 @@ export default class SIPBridge extends BaseAudioBridge {
           let shouldTryReconnect = false;
 
           // Try and get the call to clean up and end on an error
-          this.activeSession.exitAudio().catch(() => {});
+          this.activeSession.exitAudio().catch(() => { });
 
           if (this.activeSession.webrtcConnected) {
             // webrtc was able to connect so just try again
             message.silenceNotifications = true;
-            callback({ status: this.baseCallStates.reconnecting });
+            callback({ status: this.baseCallStates.reconnecting, bridge: BRIDGE_NAME, });
             shouldTryReconnect = true;
           } else if (hasFallbackDomain === true && hostname !== IPV4_FALLBACK_DOMAIN) {
             message.silenceNotifications = true;
@@ -928,7 +1237,7 @@ export default class SIPBridge extends BaseAudioBridge {
             const fallbackExtension = this.activeSession.inEchoTest ? extension : undefined;
             this.activeSession = new SIPSession(this.user, this.userData, this.protocol,
               hostname, this.baseCallStates, this.baseErrorCodes, true);
-            const { inputDeviceId } = this.media.inputDevice;
+            const { inputDeviceId } = this;
             this.activeSession.joinAudio({
               isListenOnly,
               extension: fallbackExtension,
@@ -945,7 +1254,7 @@ export default class SIPBridge extends BaseAudioBridge {
         return managerCallback(message);
       };
 
-      const { inputDeviceId } = this.media.inputDevice;
+      const { inputDeviceId } = this;
       this.activeSession.joinAudio({
         isListenOnly,
         extension,
@@ -976,7 +1285,7 @@ export default class SIPBridge extends BaseAudioBridge {
   }
 
   setDefaultInputDevice() {
-    this.media.inputDevice.inputDeviceId = DEFAULT_INPUT_DEVICE_ID;
+    this.inputDeviceId = DEFAULT_INPUT_DEVICE_ID;
   }
 
   async changeInputDeviceId(inputDeviceId) {
@@ -984,18 +1293,27 @@ export default class SIPBridge extends BaseAudioBridge {
       throw new Error();
     }
 
-    this.media.inputDevice.inputDeviceId = inputDeviceId;
+    this.inputDeviceId = inputDeviceId;
     return inputDeviceId;
   }
 
-  async changeOutputDevice(value) {
+  liveChangeInputDevice(deviceId) {
+    this.inputDeviceId = deviceId;
+    return this.activeSession.liveChangeInputDevice(deviceId);
+  }
+
+  async changeOutputDevice(value, isLive) {
     const audioContext = document.querySelector(MEDIA_TAG);
 
     if (audioContext.setSinkId) {
       try {
-        audioContext.srcObject = null;
+        if (!isLive) {
+          audioContext.srcObject = null;
+        }
+
         await audioContext.setSinkId(value);
-        this.media.outputDeviceId = value;
+        audioContext.load();
+        this.outputDeviceId = value;
       } catch (err) {
         logger.error({
           logCode: 'audio_sip_changeoutputdevice_error',
@@ -1005,6 +1323,10 @@ export default class SIPBridge extends BaseAudioBridge {
       }
     }
 
-    return this.media.outputDeviceId || value;
+    return this.outputDeviceId;
+  }
+
+  async updateAudioConstraints(constraints) {
+    return this.activeSession.updateAudioConstraints(constraints);
   }
 }
