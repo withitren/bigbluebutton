@@ -68,10 +68,8 @@ export class PeerTubePlayer extends Component {
   }
 
   getEmbedUrl = () => {
-    const { config, url } = this.props;
+    const { url } = this.props;
     const m = MATCH_URL.exec(url);
-
-    const isPresenter = config && config.peertube && config.peertube.isPresenter;
 
     return `${m[1]}://${m[2]}/videos/embed/${m[3]}?api=1&controls=${true}`;
   };

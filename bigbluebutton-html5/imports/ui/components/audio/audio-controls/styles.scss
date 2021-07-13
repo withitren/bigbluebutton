@@ -40,6 +40,12 @@
       }
     }
   }
+
+  .dropdownContent {
+    [dir="rtl"] & {
+      right: auto;
+    }
+  }
 }
 
 .glow {
@@ -70,7 +76,11 @@
 }
 
 .dropdownListContainer {
-  min-width: 10rem;
+  width: max-content;
+
+  @include mq($small-only) {
+    width: 100%;
+  }
 }
 
 .stopButton {

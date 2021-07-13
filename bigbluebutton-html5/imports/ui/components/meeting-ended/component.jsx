@@ -212,24 +212,21 @@ class MeetingEnded extends PureComponent {
   renderNoFeedback() {
     const { intl, code, reason } = this.props;
 
-    logger.info({ logCode: 'meeting_ended_code', extraInfo: { endedCode: code, reason } }, 'Meeting ended component, no feedback configured');
+    const logMessage = reason === 'user_requested_eject_reason' ? 'User removed from the meeting' : 'Meeting ended component, no feedback configured';
+    logger.info({ logCode: 'meeting_ended_code', extraInfo: { endedCode: code, reason } }, logMessage);
 
     return (
       <div className={styles.parent}>
         <div className={styles.modal}>
           <div className={styles.content}>
             <h1 className={styles.title} data-test="meetingEndedModalTitle">
-              {
-                intl.formatMessage(intlMessage[code] || intlMessage[430])
-              }
+              {this.meetingEndedBy
+                ? intl.formatMessage(intlMessage.messageEndedByUser, { 0: this.meetingEndedBy })
+                : intl.formatMessage(intlMessage[code] || intlMessage[430])}
             </h1>
             {!allowRedirectToLogoutURL() ? null : (
               <div>
-                {this.meetingEndedBy ? (
-                  <div className={styles.text}>
-                    {intl.formatMessage(intlMessage.messageEndedByUser, { 0: this.meetingEndedBy })}
-                  </div>
-                ) : null}
+
                 <div className={styles.text}>
                   {intl.formatMessage(intlMessage.messageEnded)}
                 </div>
@@ -259,7 +256,8 @@ class MeetingEnded extends PureComponent {
 
     const noRating = selected <= 0;
 
-    logger.info({ logCode: 'meeting_ended_code', extraInfo: { endedCode: code, reason } }, 'Meeting ended component, feedback allowed');
+    const logMessage = reason === 'user_requested_eject_reason' ? 'User removed from the meeting' : 'Meeting ended component, feedback allowed';
+    logger.info({ logCode: 'meeting_ended_code', extraInfo: { endedCode: code, reason } }, logMessage);
 
     return (
       <div className={styles.parent}>
@@ -292,7 +290,7 @@ class MeetingEnded extends PureComponent {
                   />
                 ) : null}
               </div>
-            ) : null }
+            ) : null}
             {noRating && allowRedirectToLogoutURL() ? (
               <Button
                 color="primary"

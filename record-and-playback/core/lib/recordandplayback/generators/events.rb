@@ -451,9 +451,7 @@ module BigBlueButton
       return new_edl
     end
 
-    def self.edl_match_recording_marks(edl, events,
-                                       edl_entry_offset, edl_empty_entry,
-                                       start_time, end_time)
+    def self.get_start_stop_events_for_edl(events, start_time, end_time)
       initial_timestamp = BigBlueButton::Events.first_event_timestamp(events)
       start_stop_events = BigBlueButton::Events.match_start_and_stop_rec_events(
               BigBlueButton::Events.get_start_and_stop_rec_events(events))
@@ -465,7 +463,12 @@ module BigBlueButton
         record_event[:start_timestamp] -= initial_timestamp
         record_event[:stop_timestamp] -= initial_timestamp
       end
+    end
 
+    def self.edl_match_recording_marks(edl, events,
+                                       edl_entry_offset, edl_empty_entry,
+                                       start_time, end_time)
+      start_stop_events = BigBlueButton::Events.get_start_stop_events_for_edl(events, start_time, end_time)
       return BigBlueButton::Events.edl_apply_start_stop_events(edl, edl_entry_offset, edl_empty_entry, start_stop_events)
     end
 
@@ -489,6 +492,23 @@ module BigBlueButton
       rec_events.sort_by {|a| a[:timestamp]}
     end
 
+    def self.get_external_video_events(events_xml)
+      BigBlueButton.logger.info "Getting external video events"
+      external_videos_events = []
+      events_xml.xpath("//event[@eventname='StartExternalVideoRecordEvent']").each do |event|
+        s = { 
+          :timestamp => event['timestamp'].to_i, 
+          :external_video_url => event.at_xpath("externalVideoUrl").text
+        }
+        external_videos_events << s
+      end
+      events_xml.xpath("//event[@eventname='StopExternalVideoRecordEvent']").each do |event|
+        s = { :timestamp => event['timestamp'].to_i }
+        external_videos_events << s
+      end
+      external_videos_events.sort_by {|a| a[:timestamp]}
+    end
+
     # Get events when the moderator wants the recording to start or stop
     def self.get_start_and_stop_rec_events(events_xml, allow_empty_events=false)
       BigBlueButton.logger.info "Getting start and stop rec button events"
@@ -504,6 +524,17 @@ module BigBlueButton
       rec_events.sort_by {|a| a[:timestamp]}
     end
     
+    # Get events when the moderator wants the recording to start or stop
+    def self.get_start_and_stop_external_video_events(events_xml)
+      BigBlueButton.logger.info "Getting start and stop externalvideo events"
+      external_video_events = BigBlueButton::Events.get_external_video_events(events_xml)
+      if external_video_events.size.odd?
+        # user did not click to stop external video before ending meeting
+        external_video_events << { :timestamp => BigBlueButton::Events.last_event_timestamp(events_xml) }
+      end
+      external_video_events.sort_by {|a| a[:timestamp]}
+    end
+    
     # Match recording start and stop events
     def self.match_start_and_stop_rec_events(rec_events)
       BigBlueButton.logger.info ("Matching record events")
@@ -517,6 +548,22 @@ module BigBlueButton
         end
       end
       matched_rec_events
+    end
+
+    # Match external video start and stop events
+    def self.match_start_and_stop_external_video_events(external_video_events)
+      BigBlueButton.logger.info ("Matching external video events")
+      matched_external_video_events = []
+      external_video_events.each_with_index do |evt,i|
+        if i.even?
+          matched_external_video_events << {
+            :start_timestamp => evt[:timestamp],
+            :stop_timestamp => external_video_events[i + 1][:timestamp],
+            :external_video_url => evt[:external_video_url],
+          }
+        end
+      end
+      matched_external_video_events
     end
 
     # Adjust the recoding start and stop events to trim them to a meeting

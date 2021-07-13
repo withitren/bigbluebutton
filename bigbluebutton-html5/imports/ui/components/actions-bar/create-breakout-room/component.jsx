@@ -43,9 +43,9 @@ const intlMessages = defineMessages({
     id: 'app.createBreakoutRoom.randomlyAssign',
     description: 'randomly assign label',
   },
-  roomName: {
-    id: 'app.createBreakoutRoom.roomName',
-    description: 'room intl to name the breakout meetings',
+  breakoutRoom: {
+    id: 'app.createBreakoutRoom.room',
+    description: 'breakout room',
   },
   freeJoinLabel: {
     id: 'app.createBreakoutRoom.freeJoin',
@@ -107,15 +107,29 @@ const intlMessages = defineMessages({
     id: 'app.createBreakoutRoom.numberOfRoomsError',
     description: 'Label an error message',
   },
+  roomNameEmptyIsValid: {
+    id: 'app.createBreakoutRoom.emptyRoomNameError',
+    description: 'Label an error message',
+  },
+  roomNameDuplicatedIsValid: {
+    id: 'app.createBreakoutRoom.duplicatedRoomNameError',
+    description: 'Label an error message',
+  },
   you: {
     id: 'app.userList.you',
     description: 'Text for identifying your user',
   },
+  minimumDurationWarnBreakout: {
+    id: 'app.createBreakoutRoom.minimumDurationWarnBreakout',
+    description: 'minimum duration warning message label',
+  },
+
 });
 
 const BREAKOUT_LIM = Meteor.settings.public.app.breakouts.breakoutRoomLimit;
 const MIN_BREAKOUT_ROOMS = 2;
 const MAX_BREAKOUT_ROOMS = BREAKOUT_LIM > MIN_BREAKOUT_ROOMS ? BREAKOUT_LIM : MIN_BREAKOUT_ROOMS;
+const MIN_BREAKOUT_TIME = 5;
 
 const propTypes = {
   intl: PropTypes.shape({
@@ -172,15 +186,22 @@ class BreakoutRoom extends PureComponent {
       durationTime: 15,
       freeJoin: false,
       formFillLevel: 1,
+      roomNamesChanged: [],
       roomSelected: 0,
       preventClosing: true,
-      valid: true,
-      record: false,
+      leastOneUserIsValid: true,
       numberOfRoomsIsValid: true,
+      roomNameDuplicatedIsValid: true,
+      roomNameEmptyIsValid: true,
+      record: false,
+      durationIsValid: true,
       breakoutJoinedUsers: null,
     };
 
     this.btnLevelId = _.uniqueId('btn-set-level-');
+
+    this.handleMoveEvent = this.handleMoveEvent.bind(this);
+    this.handleShiftUser = this.handleShiftUser.bind(this);
   }
 
   componentDidMount() {
@@ -196,7 +217,86 @@ class BreakoutRoom extends PureComponent {
     }
   }
 
+  handleShiftUser(activeListSibling) {
+    const { users } = this.state;
+    if (activeListSibling) {
+      const text = activeListSibling.getElementsByTagName('p')[0].innerText;
+      const roomNumber = text.match(/\d/g).join('');
+      users.forEach((u) => {
+        if (u.userId === document.activeElement.id) {
+          u.room = text.substr(text.length - 1).includes(')') ? 0 : parseInt(roomNumber);
+        }
+      });
+    }
+  }
+
+  handleMoveEvent(event) {
+    if (this.listOfUsers) {
+      const { activeElement } = document;
+
+      if (event.key.includes('ArrowDown')) {
+        const {
+          nextElementSibling, className, childNodes, parentElement,
+        } = activeElement;
+        if (className.includes('breakoutBox')) return childNodes[0].focus();
+
+        if (className.includes('roomUserItem')) {
+          if (!nextElementSibling) {
+            return parentElement.firstElementChild.focus();
+          }
+          return nextElementSibling.focus();
+        }
+      }
+
+      if (event.key.includes('ArrowUp')) {
+        const {
+          previousElementSibling, className, childNodes, parentElement,
+        } = activeElement;
+        if (className.includes('breakoutBox')) return childNodes[childNodes.length - 1].focus();
+
+        if (className.includes('roomUserItem')) {
+          if (!previousElementSibling) {
+            return parentElement.lastElementChild.focus();
+          }
+          return previousElementSibling.focus();
+        }
+      }
+
+      if (event.key.includes('ArrowRight')) {
+        const { parentElement: listContainer } = activeElement;
+        if (listContainer.className.includes('breakoutBox')) {
+          this.handleShiftUser(listContainer.parentElement.nextSibling);
+        }
+      }
+
+      if (event.key.includes('ArrowLeft')) {
+        const { parentElement: listContainer } = activeElement;
+        if (listContainer.className.includes('breakoutBox')) {
+          this.handleShiftUser(listContainer.parentElement.previousSibling);
+        }
+      }
+
+      this.setRoomUsers();
+    }
+  }
+
+  componentWillUnmount() {
+    if (this.listOfUsers) {
+      for (let i = 0; i < this.listOfUsers.children.length; i++) {
+        const roomList = this.listOfUsers.children[i].getElementsByTagName('div')[0];
+        roomList.removeEventListener('keydown', this.handleMoveEvent, true);
+      }
+    }
+  }
+
   componentDidUpdate(prevProps, prevstate) {
+    if (this.listOfUsers) {
+      for (let i = 0; i < this.listOfUsers.children.length; i++) {
+        const roomList = this.listOfUsers.children[i].getElementsByTagName('div')[0];
+        roomList.addEventListener('keydown', this.handleMoveEvent, true);
+      }
+    }
+
     const { numberOfRooms } = this.state;
     const { users } = this.props;
     const { users: prevUsers } = prevProps;
@@ -217,35 +317,52 @@ class BreakoutRoom extends PureComponent {
   onCreateBreakouts() {
     const {
       createBreakoutRoom,
-      meetingName,
-      intl,
     } = this.props;
     const {
       users,
       freeJoin,
       record,
       numberOfRoomsIsValid,
+      numberOfRooms,
+      durationTime,
+      durationIsValid,
     } = this.state;
 
-    if (users.length === this.getUserByRoom(0).length && !freeJoin) {
-      this.setState({ valid: false });
+    if ((durationTime || 0) < MIN_BREAKOUT_TIME) {
+      this.setState({ durationIsValid: false });
       return;
     }
 
-    if (!numberOfRoomsIsValid) {
+    if (users.length === this.getUserByRoom(0).length && !freeJoin) {
+      this.setState({ leastOneUserIsValid: false });
+      return;
+    }
+
+    if (!numberOfRoomsIsValid || !durationIsValid) {
+      return;
+    }
+
+    const duplicatedNames = _.range(1, numberOfRooms + 1).filter((n) => this.hasNameDuplicated(n));
+    if (duplicatedNames.length > 0) {
+      this.setState({ roomNameDuplicatedIsValid: false });
+      return;
+    }
+
+    const emptyNames = _.range(1, numberOfRooms + 1).filter((n) => this.getRoomName(n).length === 0);
+    if (emptyNames.length > 0) {
+      this.setState({ roomNameEmptyIsValid: false });
       return;
     }
 
     this.setState({ preventClosing: false });
-    const { numberOfRooms, durationTime } = this.state;
-    const rooms = _.range(1, numberOfRooms + 1).map(value => ({
-      users: this.getUserByRoom(value).map(u => u.userId),
-      name: intl.formatMessage(intlMessages.roomName, {
-        0: meetingName,
-        1: value,
-      }),
+
+    const rooms = _.range(1, numberOfRooms + 1).map((seq) => ({
+      users: this.getUserByRoom(seq).map((u) => u.userId),
+      name: this.getFullName(seq),
+      shortName: this.getRoomName(seq),
+      isDefaultName: !this.hasNameChanged(seq),
       freeJoin,
-      sequence: value,
+      sequence: seq,
     }));
 
     createBreakoutRoom(rooms, durationTime, record);
@@ -254,17 +371,17 @@ class BreakoutRoom extends PureComponent {
 
   onInviteBreakout() {
     const { getBreakouts, sendInvitation } = this.props;
-    const { users } = this.state;
+    const { users, freeJoin } = this.state;
     const breakouts = getBreakouts();
-    if (users.length === this.getUserByRoom(0).length) {
-      this.setState({ valid: false });
+    if (users.length === this.getUserByRoom(0).length && !freeJoin) {
+      this.setState({ leastOneUserIsValid: false });
       return;
     }
 
     breakouts.forEach((breakout) => {
       const { breakoutId } = breakout;
       const breakoutUsers = this.getUserByRoom(breakout.sequence);
-      breakoutUsers.forEach(user => sendInvitation(breakoutId, user.userId));
+      breakoutUsers.forEach((user) => sendInvitation(breakoutId, user.userId));
     });
 
     this.setState({ preventClosing: false });
@@ -275,7 +392,7 @@ class BreakoutRoom extends PureComponent {
     const { users } = this.state;
     // We only want to assign viewers so filter out the moderators. We also want to get
     // all users each run so that clicking the button again will reshuffle
-    const viewers = users.filter(user => !user.isModerator);
+    const viewers = users.filter((user) => !user.isModerator);
     // We want to keep assigning users until all viewers have been assigned a room
     while (viewers.length > 0) {
       // We cycle through the rooms picking one user for each room so that the rooms
@@ -290,7 +407,6 @@ class BreakoutRoom extends PureComponent {
     }
   }
 
-
   setInvitationConfig() {
     const { getBreakouts } = this.props;
     this.setState({
@@ -302,10 +418,10 @@ class BreakoutRoom extends PureComponent {
   setRoomUsers() {
     const { users, getUsersNotAssigned } = this.props;
     const { users: stateUsers } = this.state;
-    const stateUsersId = stateUsers.map(user => user.userId);
+    const stateUsersId = stateUsers.map((user) => user.userId);
     const roomUsers = getUsersNotAssigned(users)
-      .filter(user => !stateUsersId.includes(user.userId))
-      .map(user => ({
+      .filter((user) => !stateUsersId.includes(user.userId))
+      .map((user) => ({
         userId: user.userId,
         userName: user.name,
         isModerator: user.role === ROLE_MODERATOR,
@@ -321,7 +437,7 @@ class BreakoutRoom extends PureComponent {
   }
 
   setFreeJoin(e) {
-    this.setState({ freeJoin: e.target.checked, valid: true });
+    this.setState({ freeJoin: e.target.checked, leastOneUserIsValid: true });
   }
 
   setRecord(e) {
@@ -330,20 +446,20 @@ class BreakoutRoom extends PureComponent {
 
   getUserByRoom(room) {
     const { users } = this.state;
-    return users.filter(user => user.room === room);
+    return users.filter((user) => user.room === room);
   }
 
   getUsersByRoomSequence(sequence) {
     const { breakoutJoinedUsers } = this.state;
     if (!breakoutJoinedUsers) return [];
-    return breakoutJoinedUsers.filter(room => room.sequence === sequence)[0].joinedUsers || [];
+    return breakoutJoinedUsers.filter((room) => room.sequence === sequence)[0].joinedUsers || [];
   }
 
   removeRoomUsers() {
     const { users } = this.props;
     const { users: stateUsers } = this.state;
-    const userIds = users.map(user => user.userId);
-    const removeUsers = stateUsers.filter(user => userIds.includes(user.userId));
+    const userIds = users.map((user) => user.userId);
+    const removeUsers = stateUsers.filter((user) => userIds.includes(user.userId));
 
     this.setState({
       users: removeUsers,
@@ -364,14 +480,14 @@ class BreakoutRoom extends PureComponent {
 
   resetUserWhenRoomsChange(rooms) {
     const { users } = this.state;
-    const filtredUsers = users.filter(u => u.room > rooms);
-    filtredUsers.forEach(u => this.changeUserRoom(u.userId, 0));
+    const filtredUsers = users.filter((u) => u.room > rooms);
+    filtredUsers.forEach((u) => this.changeUserRoom(u.userId, 0));
   }
 
   changeUserRoom(userId, room) {
-    const { users } = this.state;
+    const { users, freeJoin } = this.state;
 
-    const idxUser = users.findIndex(user => user.userId === userId);
+    const idxUser = users.findIndex((user) => user.userId === userId);
 
     const usersCopy = [...users];
 
@@ -379,23 +495,31 @@ class BreakoutRoom extends PureComponent {
 
     this.setState({
       users: usersCopy,
-      valid: this.getUserByRoom(0).length !== users.length,
+      leastOneUserIsValid: (this.getUserByRoom(0).length !== users.length || freeJoin),
     });
   }
 
   increaseDurationTime() {
     const { durationTime } = this.state;
-    this.setState({ durationTime: (1 * durationTime) + 1 });
+    const number = ((1 * durationTime) + 1);
+    const newDurationTime = number > MIN_BREAKOUT_TIME ? number : MIN_BREAKOUT_TIME;
+
+    this.setState({ durationTime: newDurationTime, durationIsValid: true });
   }
 
   decreaseDurationTime() {
     const { durationTime } = this.state;
     const number = ((1 * durationTime) - 1);
-    this.setState({ durationTime: number < 1 ? 1 : number });
+    const newDurationTime = number > MIN_BREAKOUT_TIME ? number : MIN_BREAKOUT_TIME;
+
+    this.setState({ durationTime: newDurationTime, durationIsValid: true });
   }
 
   changeDurationTime(event) {
-    this.setState({ durationTime: Number.parseInt(event.target.value, 10) || '' });
+    const durationTime = Number.parseInt(event.target.value, 10) || '';
+    const durationIsValid = durationTime >= MIN_BREAKOUT_TIME;
+
+    this.setState({ durationTime, durationIsValid });
   }
 
   blurDurationTime(event) {
@@ -408,16 +532,57 @@ class BreakoutRoom extends PureComponent {
     this.setState({
       numberOfRooms,
       numberOfRoomsIsValid: numberOfRooms <= MAX_BREAKOUT_ROOMS
-      && numberOfRooms >= MIN_BREAKOUT_ROOMS,
+        && numberOfRooms >= MIN_BREAKOUT_ROOMS,
     });
+  }
+
+  getRoomName(position) {
+    const { intl } = this.props;
+    const { roomNamesChanged } = this.state;
+
+    if (this.hasNameChanged(position)) {
+      return roomNamesChanged[position];
+    }
+
+    return intl.formatMessage(intlMessages.breakoutRoom, { 0: position });
+  }
+
+  getFullName(position) {
+    const { meetingName } = this.props;
+
+    return `${meetingName} (${this.getRoomName(position)})`;
+  }
+
+  hasNameChanged(position) {
+    const { intl } = this.props;
+    const { roomNamesChanged } = this.state;
+
+    if (typeof roomNamesChanged[position] !== 'undefined'
+    && roomNamesChanged[position] !== intl.formatMessage(intlMessages.breakoutRoom, { 0: position })) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  hasNameDuplicated(position) {
+    const { numberOfRooms } = this.state;
+    const currName = this.getRoomName(position).trim();
+    const equals = _.range(1, numberOfRooms + 1)
+      .filter((n) => this.getRoomName(n).trim() === currName);
+    if (equals.length > 1) return true;
+
+    return false;
   }
 
   renderRoomsGrid() {
     const { intl, isInvitation } = this.props;
     const {
-      valid,
+      leastOneUserIsValid,
       numberOfRooms,
+      roomNamesChanged,
     } = this.state;
+
     const rooms = (numberOfRooms > MAX_BREAKOUT_ROOMS
       || numberOfRooms < MIN_BREAKOUT_ROOMS)
       ? 0 : numberOfRooms;
@@ -425,36 +590,72 @@ class BreakoutRoom extends PureComponent {
       ev.preventDefault();
     };
 
-    const drop = room => (ev) => {
+    const drop = (room) => (ev) => {
       ev.preventDefault();
       const data = ev.dataTransfer.getData('text');
       this.changeUserRoom(data, room);
       this.setState({ seletedId: '' });
     };
 
+    const changeRoomName = (position) => (ev) => {
+      let newRoomsNames = [...roomNamesChanged];
+      newRoomsNames[position] = ev.target.value;
+
+      this.setState({
+        roomNamesChanged: newRoomsNames,
+        roomNameDuplicatedIsValid: true,
+        roomNameEmptyIsValid: true,
+      });
+    };
+
     return (
-      <div className={styles.boxContainer} key="rooms-grid-">
-        <div className={!valid ? styles.changeToWarn : null}>
+      <div className={styles.boxContainer} key="rooms-grid-" ref={(r) => this.listOfUsers = r}>
+        <div className={!leastOneUserIsValid ? styles.changeToWarn : null}>
           <p className={styles.freeJoinLabel}>
-            {intl.formatMessage(intlMessages.notAssigned, { 0: this.getUserByRoom(0).length })}
+            <input
+                type="text"
+                readOnly={true}
+                className={styles.breakoutNameInput}
+                value={intl.formatMessage(intlMessages.notAssigned, { 0: this.getUserByRoom(0).length })}
+            />
           </p>
-          <div className={styles.breakoutBox} onDrop={drop(0)} onDragOver={allowDrop}>
+          <div className={styles.breakoutBox} onDrop={drop(0)} onDragOver={allowDrop} tabIndex={0}>
             {this.renderUserItemByRoom(0)}
           </div>
-          <span className={valid ? styles.dontShow : styles.leastOneWarn}>
+          <span className={leastOneUserIsValid ? styles.dontShow : styles.spanWarn}>
             {intl.formatMessage(intlMessages.leastOneWarnBreakout)}
           </span>
         </div>
         {
-          _.range(1, rooms + 1).map(value => (
+          _.range(1, rooms + 1).map((value) => (
             <div key={`room-${value}`}>
               <p className={styles.freeJoinLabel}>
-                {intl.formatMessage(intlMessages.roomLabel, { 0: (value) })}
+                <input
+                  type="text"
+                  maxLength="255"
+                  className={cx(styles.breakoutNameInput,
+                    this.getRoomName(value).length === 0 ? styles.errorBorder : null,
+                    this.hasNameDuplicated(value) ? styles.errorBorder : null)}
+                  value={this.getRoomName(value)}
+                  onChange={changeRoomName(value)}
+                  onBlur={changeRoomName(value)}
+                  aria-label={intl.formatMessage(intlMessages.duration)}
+                />
               </p>
-              <div className={styles.breakoutBox} onDrop={drop(value)} onDragOver={allowDrop}>
+              <div className={styles.breakoutBox} onDrop={drop(value)} onDragOver={allowDrop} tabIndex={0}>
                 {this.renderUserItemByRoom(value)}
                 {isInvitation && this.renderJoinedUsers(value)}
               </div>
+              { this.hasNameDuplicated(value) ? (
+                <span className={styles.spanWarn}>
+                  {intl.formatMessage(intlMessages.roomNameDuplicatedIsValid)}
+                </span>
+              ) : null }
+              { this.getRoomName(value).length === 0 ? (
+                <span className={styles.spanWarn}>
+                  {intl.formatMessage(intlMessages.roomNameEmptyIsValid)}
+                </span>
+              ) : null }
             </div>
           ))
         }
@@ -471,6 +672,7 @@ class BreakoutRoom extends PureComponent {
       numberOfRooms,
       durationTime,
       numberOfRoomsIsValid,
+      durationIsValid,
     } = this.state;
     if (isInvitation) return null;
 
@@ -495,11 +697,11 @@ class BreakoutRoom extends PureComponent {
               aria-label={intl.formatMessage(intlMessages.numberOfRooms)}
             >
               {
-                _.range(MIN_BREAKOUT_ROOMS, MAX_BREAKOUT_ROOMS + 1).map(item => (<option key={_.uniqueId('value-')}>{item}</option>))
+                _.range(MIN_BREAKOUT_ROOMS, MAX_BREAKOUT_ROOMS + 1).map((item) => (<option key={_.uniqueId('value-')}>{item}</option>))
               }
             </select>
           </div>
-          <label htmlFor="breakoutRoomTime">
+          <label htmlFor="breakoutRoomTime" className={!durationIsValid ? styles.changeToWarn : null}>
             <p className={styles.labelText} aria-hidden>
               {intl.formatMessage(intlMessages.duration)}
             </p>
@@ -526,7 +728,7 @@ class BreakoutRoom extends PureComponent {
                     `${intl.formatMessage(intlMessages.minusRoomTime)} ${intl.formatMessage(intlMessages.roomTime, { 0: durationTime - 1 })}`
                   }
                   icon="substract"
-                  onClick={() => {}}
+                  onClick={() => { }}
                   hideLabel
                   circle
                   size="sm"
@@ -543,13 +745,17 @@ class BreakoutRoom extends PureComponent {
                     `${intl.formatMessage(intlMessages.addRoomTime)} ${intl.formatMessage(intlMessages.roomTime, { 0: durationTime + 1 })}`
                   }
                   icon="add"
-                  onClick={() => {}}
+                  onClick={() => { }}
                   hideLabel
                   circle
                   size="sm"
                 />
               </HoldButton>
             </div>
+            <span className={durationIsValid ? styles.dontShow : styles.leastOneWarn}>
+              {intl.formatMessage(intlMessages.minimumDurationWarnBreakout, { 0: MIN_BREAKOUT_TIME })}
+            </span>
+
           </label>
           <Button
             data-test="randomlyAssign"
@@ -585,7 +791,7 @@ class BreakoutRoom extends PureComponent {
         room={roomSelected}
         breakoutJoinedUsers={isInvitation && breakoutJoinedUsers}
         onCheck={this.changeUserRoom}
-        onUncheck={userId => this.changeUserRoom(userId, 0)}
+        onUncheck={(userId) => this.changeUserRoom(userId, 0)}
       />
     );
   }
@@ -633,7 +839,7 @@ class BreakoutRoom extends PureComponent {
 
   renderUserItemByRoom(room) {
     const {
-      valid,
+      leastOneUserIsValid,
       seletedId,
     } = this.state;
 
@@ -643,38 +849,38 @@ class BreakoutRoom extends PureComponent {
       ev.dataTransfer.setData('text', ev.target.id);
       this.setState({ seletedId: ev.target.id });
 
-      if (!valid) {
-        this.setState({ valid: true });
+      if (!leastOneUserIsValid) {
+        this.setState({ leastOneUserIsValid: true });
       }
     };
-
 
     const dragEnd = () => {
       this.setState({ seletedId: '' });
     };
 
     return this.getUserByRoom(room)
-      .map(user => (
+      .map((user) => (
         <p
+          tabIndex={0}
           id={user.userId}
           key={user.userId}
           className={cx(
             styles.roomUserItem,
             seletedId === user.userId ? styles.selectedItem : null,
-          )
-          }
+          )}
           draggable
           onDragStart={dragStart}
           onDragEnd={dragEnd}
         >
           {user.userName}
           <i>{(isMe(user.userId)) ? ` (${intl.formatMessage(intlMessages.you)})` : ''}</i>
-        </p>));
+        </p>
+      ));
   }
 
   renderJoinedUsers(room) {
     return this.getUsersByRoomSequence(room)
-      .map(user => (
+      .map((user) => (
         <p
           id={user.userId}
           key={user.userId}
@@ -682,8 +888,7 @@ class BreakoutRoom extends PureComponent {
           className={cx(
             styles.roomUserItem,
             styles.disableItem,
-          )
-          }
+          )}
         >
           {user.name}
           <span className={styles.lockIcon} />
@@ -694,7 +899,7 @@ class BreakoutRoom extends PureComponent {
   renderRoomSortList() {
     const { intl, isInvitation } = this.props;
     const { numberOfRooms } = this.state;
-    const onClick = roomNumber => this.setState({ formFillLevel: 3, roomSelected: roomNumber });
+    const onClick = (roomNumber) => this.setState({ formFillLevel: 3, roomSelected: roomNumber });
     return (
       <div className={styles.listContainer}>
         <span>
@@ -716,7 +921,7 @@ class BreakoutRoom extends PureComponent {
             ))
           }
         </span>
-        { isInvitation || this.renderButtonSetLevel(1, intl.formatMessage(intlMessages.backLabel))}
+        {isInvitation || this.renderButtonSetLevel(1, intl.formatMessage(intlMessages.backLabel))}
       </div>
     );
   }
@@ -726,22 +931,38 @@ class BreakoutRoom extends PureComponent {
       intl,
     } = this.props;
     const {
-      valid,
+      leastOneUserIsValid,
       numberOfRoomsIsValid,
+      roomNameDuplicatedIsValid,
+      roomNameEmptyIsValid,
     } = this.state;
     return (
-      <React.Fragment>
-        {!valid
+      <>
+        {!leastOneUserIsValid
           && (
-          <span className={styles.withError}>
-            {intl.formatMessage(intlMessages.leastOneWarnBreakout)}
-          </span>)}
+            <span className={styles.withError}>
+              {intl.formatMessage(intlMessages.leastOneWarnBreakout)}
+            </span>
+          )}
         {!numberOfRoomsIsValid
           && (
+            <span className={styles.withError}>
+              {intl.formatMessage(intlMessages.numberOfRoomsIsValid)}
+            </span>
+          )}
+        {!roomNameDuplicatedIsValid
+          && (
           <span className={styles.withError}>
-            {intl.formatMessage(intlMessages.numberOfRoomsIsValid)}
-          </span>)}
-      </React.Fragment>
+            {intl.formatMessage(intlMessages.roomNameDuplicatedIsValid)}
+          </span>
+          )}
+        {!roomNameEmptyIsValid
+          && (
+          <span className={styles.withError}>
+            {intl.formatMessage(intlMessages.roomNameEmptyIsValid)}
+          </span>
+          )}
+      </>
     );
   }
 
@@ -803,8 +1024,11 @@ class BreakoutRoom extends PureComponent {
     const { intl, isInvitation } = this.props;
     const {
       preventClosing,
-      valid,
+      leastOneUserIsValid,
       numberOfRoomsIsValid,
+      roomNameDuplicatedIsValid,
+      roomNameEmptyIsValid,
+      durationIsValid,
     } = this.state;
 
     const { isMobile } = deviceInfo;
@@ -822,7 +1046,12 @@ class BreakoutRoom extends PureComponent {
               ? intl.formatMessage(intlMessages.invitationConfirm)
               : intl.formatMessage(intlMessages.confirmButton),
             callback: isInvitation ? this.onInviteBreakout : this.onCreateBreakouts,
-            disabled: !valid || !numberOfRoomsIsValid,
+            disabled: !leastOneUserIsValid
+                || !numberOfRoomsIsValid
+                || !roomNameDuplicatedIsValid
+                || !roomNameEmptyIsValid
+                || !durationIsValid
+                ,
           }
         }
         dismiss={{

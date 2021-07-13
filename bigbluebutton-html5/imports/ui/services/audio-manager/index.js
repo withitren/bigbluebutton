@@ -11,6 +11,7 @@ import iosWebviewAudioPolyfills from '/imports/utils/ios-webview-audio-polyfills
 import { monitorAudioConnection } from '/imports/utils/stats';
 import AudioErrors from './error-codes';
 import {Meteor} from "meteor/meteor";
+import browserInfo from '/imports/utils/browserInfo';
 
 const STATS = Meteor.settings.public.stats;
 const MEDIA = Meteor.settings.public.media;
@@ -20,6 +21,8 @@ const MAX_LISTEN_ONLY_RETRIES = 1;
 const LISTEN_ONLY_CALL_TIMEOUT_MS = MEDIA.listenOnlyCallTimeout || 25000;
 const DEFAULT_INPUT_DEVICE_ID = 'default';
 const DEFAULT_OUTPUT_DEVICE_ID = 'default';
+const EXPERIMENTAL_USE_KMS_TRICKLE_ICE_FOR_MICROPHONE = Meteor.settings
+  .public.app.experimentalUseKmsTrickleIceForMicrophone;
 
 const CALL_STATES = {
   STARTED: 'started',
@@ -67,6 +70,9 @@ class AudioManager {
     this.handlePlayElementFailed = this.handlePlayElementFailed.bind(this);
     this.monitor = this.monitor.bind(this);
 
+    this._inputStream = null;
+    this._inputStreamTracker = new Tracker.Dependency();
+
     this.BREAKOUT_AUDIO_TRANSFER_STATES = BREAKOUT_AUDIO_TRANSFER_STATES;
   }
 
@@ -106,7 +112,29 @@ class AudioManager {
     });
   }
 
+  async trickleIce() {
+    const { isFirefox, isIe, isSafari } = browserInfo;
+
+    if (!this.listenOnlyBridge
+      || isFirefox
+      || isIe
+      || isSafari) return [];
+
+    if (this.validIceCandidates && this.validIceCandidates.length) {
+      logger.info({ logCode: 'audiomanager_trickle_ice_reuse_candidate' },
+        'Reusing trickle-ice information before activating microphone');
+      return this.validIceCandidates;
+    }
+
+    logger.info({ logCode: 'audiomanager_trickle_ice_get_local_candidate' },
+      'Performing trickle-ice before activating microphone');
+    this.validIceCandidates = await this.listenOnlyBridge.trickleIce() || [];
+    return this.validIceCandidates;
+  }
+
   joinMicrophone() {
+    this.audioJoinStartTime = new Date();
+    this.logAudioJoinTime = false;
     this.isListenOnly = false;
     this.isEchoTest = false;
 
@@ -122,15 +150,23 @@ class AudioManager {
   }
 
   joinEchoTest() {
+    this.audioJoinStartTime = new Date();
+    this.logAudioJoinTime = false;
     this.isListenOnly = false;
     this.isEchoTest = true;
 
     return this.onAudioJoining.bind(this)()
-      .then(() => {
+      .then(async () => {
+        let validIceCandidates = [];
+        if (EXPERIMENTAL_USE_KMS_TRICKLE_ICE_FOR_MICROPHONE) {
+          validIceCandidates = await this.trickleIce();
+        }
+
         const callOptions = {
           isListenOnly: false,
           extension: ECHO_TEST_NUMBER,
           inputStream: this.inputStream,
+          validIceCandidates,
         };
         logger.info({ logCode: 'audiomanager_join_echotest', extraInfo: { logType: 'user_action' } }, 'User requested to join audio conference with mic');
         return this.joinAudio(callOptions, this.callStateCallback.bind(this));
@@ -180,6 +216,8 @@ class AudioManager {
   }
 
   async joinListenOnly(r = 0) {
+    this.audioJoinStartTime = new Date();
+    this.logAudioJoinTime = false;
     let retries = r;
     this.isListenOnly = true;
     this.isEchoTest = false;
@@ -330,17 +368,26 @@ class AudioManager {
         changed: (id, fields) => this.onVoiceUserChanges(fields),
       });
     }
+    const secondsToActivateAudio = (new Date() - this.audioJoinStartTime) / 1000;
+
+    if (!this.logAudioJoinTime) {
+      this.logAudioJoinTime = true;
+      logger.info({ logCode: 'audio_mic_join_time' }, 'Time needed to '
+      + `connect audio (seconds): ${secondsToActivateAudio}`);
+    }
 
     if (!this.isEchoTest) {
       window.parent.postMessage({ response: 'joinedAudio' }, '*');
       this.notify(this.intl.formatMessage(this.messages.info.JOINED_AUDIO));
       logger.info({ logCode: 'audio_joined' }, 'Audio Joined');
+      this.inputStream = (this.bridge ? this.bridge.inputStream : null);
       if (STATS.enabled) this.monitor();
       this.audioEventHandler({
         name: 'started',
         isListenOnly: this.isListenOnly,
       });
     }
+    Session.set('audioModalIsOpen', false);
   }
 
   onTransferStart() {
@@ -356,7 +403,8 @@ class AudioManager {
     this.failedMediaElements = [];
 
     if (this.inputStream) {
-      this.inputStream.getTracks().forEach(track => track.stop());
+      this.inputStream.getTracks().forEach((track) => track.stop());
+      this.inputStream = null;
       this.inputDevice = { id: 'default' };
     }
 
@@ -497,11 +545,13 @@ class AudioManager {
   }
 
   liveChangeInputDevice(deviceId) {
-    const handleChangeInputDeviceSuccess = (inputDevice) => {
-      this.inputDevice = inputDevice;
-      return Promise.resolve(inputDevice);
-    };
-    this.bridge.liveChangeInputDevice(deviceId).then(handleChangeInputDeviceSuccess);
+    // we force stream to be null, so MutedAlert will deallocate it and
+    // a new one will be created for the new stream
+    this.inputStream = null;
+    this.bridge.liveChangeInputDevice(deviceId).then((stream) => {
+      this.setSenderTrackEnabled(!this.isMuted);
+      this.inputStream = stream;
+    });
   }
 
   async changeOutputDevice(deviceId, isLive) {
@@ -516,8 +566,19 @@ class AudioManager {
   }
 
   get inputStream() {
-    this._inputDevice.tracker.depend();
-    return (this.bridge ? this.bridge.inputStream : null);
+    this._inputStreamTracker.depend();
+    return this._inputStream;
+  }
+
+  set inputStream(stream) {
+    // We store reactive information about input stream
+    // because mutedalert component needs to track when it changes
+    // and then update hark with the new value for inputStream
+    if (this._inputStream !== stream) {
+      this._inputStreamTracker.changed();
+    }
+
+    this._inputStream = stream;
   }
 
   get inputDevice() {
@@ -661,7 +722,7 @@ class AudioManager {
   }
 
   playAlertSound(url) {
-    if (!url) {
+    if (!url || !this.bridge) {
       return Promise.resolve();
     }
 

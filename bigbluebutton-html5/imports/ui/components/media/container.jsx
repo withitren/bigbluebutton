@@ -20,11 +20,12 @@ import Auth from '/imports/ui/services/auth';
 import breakoutService from '/imports/ui/components/breakout-room/service';
 
 const LAYOUT_CONFIG = Meteor.settings.public.layout;
-const KURENTO_CONFIG = Meteor.settings.public.kurento;
 
 const propTypes = {
   isScreensharing: PropTypes.bool.isRequired,
-  intl: PropTypes.object.isRequired,
+  intl: PropTypes.shape({
+    formatMessage: PropTypes.func.isRequired,
+  }).isRequired,
 };
 
 const intlMessages = defineMessages({
@@ -36,26 +37,9 @@ const intlMessages = defineMessages({
     id: 'app.media.screenshare.end',
     description: 'toast to show when a screenshare has ended',
   },
-  screenshareNotSupported: {
-    id: 'app.media.screenshare.notSupported',
-    description: 'Error message for screenshare not supported',
-  },
-  chromeExtensionError: {
-    id: 'app.video.chromeExtensionError',
-    description: 'Error message for Chrome Extension not installed',
-  },
-  chromeExtensionErrorLink: {
-    id: 'app.video.chromeExtensionErrorLink',
-    description: 'Error message for Chrome Extension not installed',
-  },
 });
 
 class MediaContainer extends Component {
-  componentDidMount() {
-    document.addEventListener('installChromeExtension', this.installChromeExtension.bind(this));
-    document.addEventListener('screenshareNotSupported', this.screenshareNotSupported.bind(this));
-  }
-
   componentDidUpdate(prevProps) {
     const {
       isScreensharing,
@@ -74,35 +58,6 @@ class MediaContainer extends Component {
     }
   }
 
-  componentWillUnmount() {
-    document.removeEventListener('installChromeExtension', this.installChromeExtension.bind(this));
-    document.removeEventListener('screenshareNotSupported', this.screenshareNotSupported.bind(this));
-  }
-
-  installChromeExtension() {
-    const { intl } = this.props;
-
-    const CHROME_DEFAULT_EXTENSION_LINK = KURENTO_CONFIG.chromeDefaultExtensionLink;
-    const CHROME_CUSTOM_EXTENSION_LINK = KURENTO_CONFIG.chromeExtensionLink;
-    const CHROME_EXTENSION_LINK = CHROME_CUSTOM_EXTENSION_LINK === 'LINK' ? CHROME_DEFAULT_EXTENSION_LINK : CHROME_CUSTOM_EXTENSION_LINK;
-
-    const chromeErrorElement = (
-      <div>
-        {intl.formatMessage(intlMessages.chromeExtensionError)}
-        {' '}
-        <a href={CHROME_EXTENSION_LINK} target="_blank" rel="noopener noreferrer">
-          {intl.formatMessage(intlMessages.chromeExtensionErrorLink)}
-        </a>
-      </div>
-    );
-    notify(chromeErrorElement, 'error', 'desktop');
-  }
-
-  screenshareNotSupported() {
-    const { intl } = this.props;
-    notify(intl.formatMessage(intlMessages.screenshareNotSupported), 'error', 'desktop');
-  }
-
   render() {
     return <Media {...this.props} />;
   }
@@ -112,7 +67,7 @@ let userWasInBreakout = false;
 
 export default withLayoutConsumer(withModalMounter(withTracker(() => {
   const { dataSaving } = Settings;
-  const { viewParticipantsWebcams, viewScreenshare } = dataSaving;
+  const { viewScreenshare } = dataSaving;
   const hidePresentation = getFromUserSettings('bbb_hide_presentation', LAYOUT_CONFIG.hidePresentation);
   const autoSwapLayout = getFromUserSettings('bbb_auto_swap_layout', LAYOUT_CONFIG.autoSwapLayout);
   const { current_presentation: hasPresentation } = MediaService.getPresentationInfo();
@@ -159,7 +114,7 @@ export default withLayoutConsumer(withModalMounter(withTracker(() => {
   const { streams: usersVideo } = VideoService.getVideoStreams();
   data.usersVideo = usersVideo;
 
-  if (MediaService.shouldShowOverlay() && usersVideo.length && viewParticipantsWebcams) {
+  if (MediaService.shouldShowOverlay() && usersVideo.length) {
     data.floatingOverlay = usersVideo.length < 2;
     data.hideOverlay = usersVideo.length === 0;
   }
@@ -168,7 +123,6 @@ export default withLayoutConsumer(withModalMounter(withTracker(() => {
 
   data.isScreensharing = MediaService.isVideoBroadcasting();
   data.swapLayout = (getSwapLayout() || !hasPresentation) && shouldEnableSwapLayout();
-  data.disableVideo = !viewParticipantsWebcams;
 
   if (data.swapLayout) {
     data.floatingOverlay = true;

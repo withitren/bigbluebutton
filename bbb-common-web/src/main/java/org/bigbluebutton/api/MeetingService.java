@@ -86,6 +86,7 @@ import org.bigbluebutton.api2.IBbbWebApiGWApp;
 import org.bigbluebutton.api2.domain.UploadedTrack;
 import org.bigbluebutton.common2.redis.RedisStorageService;
 import org.bigbluebutton.presentation.PresentationUrlDownloadService;
+import org.bigbluebutton.presentation.imp.SwfSlidesGenerationProgressNotifier;
 import org.bigbluebutton.web.services.WaitingGuestCleanupTimerTask;
 import org.bigbluebutton.web.services.UserCleanupTimerTask;
 import org.bigbluebutton.web.services.EnteredUserCleanupTimerTask;
@@ -120,6 +121,7 @@ public class MeetingService implements MessageListener {
   private RedisStorageService storeService;
   private CallbackUrlService callbackUrlService;
   private HTML5LoadBalancingService html5LoadBalancingService;
+  private SwfSlidesGenerationProgressNotifier notifier;
 
   private long usersTimeout;
   private long enteredUsersTimeout;
@@ -314,6 +316,18 @@ public class MeetingService implements MessageListener {
     return valid;
   }
 
+  public PresentationUploadToken getPresentationUploadToken(String authzToken) {
+    if(uploadAuthzTokens.containsKey(authzToken)) {
+      return uploadAuthzTokens.get(authzToken);
+    } else {
+      return null;
+    }
+  }
+
+  public void sendPresentationUploadMaxFilesizeMessage(PresentationUploadToken presUploadToken, int uploadedFileSize, int maxUploadFileSize) {
+    notifier.sendUploadFileTooLargeMessage(presUploadToken, uploadedFileSize, maxUploadFileSize);
+  }
+
   private void removeUserSessions(String meetingId) {
     Iterator<Map.Entry<String, UserSession>> iterator = sessions.entrySet().iterator();
     while (iterator.hasNext()) {
@@ -418,7 +432,8 @@ public class MeetingService implements MessageListener {
             m.getDialNumber(), m.getMaxUsers(),
             m.getMeetingExpireIfNoUserJoinedInMinutes(), m.getmeetingExpireWhenLastUserLeftInMinutes(),
             m.getUserInactivityInspectTimerInMinutes(), m.getUserInactivityThresholdInMinutes(),
-            m.getUserActivitySignResponseDelayInMinutes(), m.getMuteOnStart(), m.getAllowModsToUnmuteUsers(), m.getMeetingKeepEvents(),
+            m.getUserActivitySignResponseDelayInMinutes(), m.getEndWhenNoModerator(), m.getEndWhenNoModeratorDelayInMinutes(),
+            m.getMuteOnStart(), m.getAllowModsToUnmuteUsers(), m.getMeetingKeepEvents(),
             m.breakoutRoomsParams,
             m.lockSettingsParams, m.getHtml5InstanceId());
   }
@@ -1241,4 +1256,9 @@ public class MeetingService implements MessageListener {
   public void setEnteredUsersTimeout(long value) {
     enteredUsersTimeout = value;
   }
+
+  public void setSwfSlidesGenerationProgressNotifier(SwfSlidesGenerationProgressNotifier notifier) {
+    this.notifier = notifier;
+  }
+
 }

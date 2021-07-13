@@ -1,37 +1,70 @@
-import React, { memo } from 'react';
-import { withTracker } from 'meteor/react-meteor-data';
-import UserListService from '/imports/ui/components/user-list/service';
-import Settings from '/imports/ui/services/settings';
+import React, { useContext } from 'react';
+import PropTypes from 'prop-types';
 import ChatAlert from './component';
-import Auth from '/imports/ui/services/auth';
-import Users from '/imports/api/users';
+import { NLayoutContext } from '../../layout/context/context';
+import { PANELS } from '../../layout/enums';
+import { UsersContext } from '/imports/ui/components/components-data/users-context/context';
+import { ChatContext } from '/imports/ui/components/components-data/chat-context/context';
+import { GroupChatContext } from '/imports/ui/components/components-data/group-chat-context/context';
+import userListService from '/imports/ui/components/user-list/service';
+import UnreadMessages from '/imports/ui/services/unread-messages';
 
-const ChatAlertContainer = props => (
-  <ChatAlert {...props} />
-);
+const PUBLIC_CHAT_ID = Meteor.settings.public.chat.public_group_id;
 
-export default withTracker(() => {
-  const AppSettings = Settings.application;
-  const activeChats = [];
-  // UserListService.getActiveChats();
-  const { loginTime } = Users.findOne({ userId: Auth.userID }, { fields: { loginTime: 1 } });
+const propTypes = {
+  audioAlertEnabled: PropTypes.bool.isRequired,
+  pushAlertEnabled: PropTypes.bool.isRequired,
+};
 
-  const openPanel = Session.get('openPanel');
-  let idChatOpen = Session.get('idChatOpen');
+const ChatAlertContainer = (props) => {
+  const newLayoutContext = useContext(NLayoutContext);
+  const { newLayoutContextState, newLayoutContextDispatch } = newLayoutContext;
+  const { idChatOpen, input } = newLayoutContextState;
+  const { sidebarContent } = input;
+  const { sidebarContentPanel } = sidebarContent;
+  const { audioAlertEnabled, pushAlertEnabled } = props;
 
-  // Currently the panel can switch from the chat panel to something else and the idChatOpen won't
-  // always reset. A better solution would be to make the openPanel Session variable an
-  // Object { panelType: <String>, panelOptions: <Object> } and then get rid of idChatOpen
-  if (openPanel !== 'chat') {
-    idChatOpen = '';
-  }
+  let idChat = idChatOpen;
+  if (sidebarContentPanel !== PANELS.CHAT) idChat = '';
 
-  return {
-    audioAlertDisabled: !AppSettings.chatAudioAlerts,
-    pushAlertDisabled: !AppSettings.chatPushAlerts,
-    activeChats,
-    publicUserId: Meteor.settings.public.chat.public_group_id,
-    joinTimestamp: loginTime,
-    idChatOpen,
-  };
-})(memo(ChatAlertContainer));
+  const usingUsersContext = useContext(UsersContext);
+  const usingChatContext = useContext(ChatContext);
+  const usingGroupChatContext = useContext(GroupChatContext);
+
+  const { users } = usingUsersContext;
+  const { chats: groupChatsMessages } = usingChatContext;
+  const { groupChat: groupChats } = usingGroupChatContext;
+
+  const activeChats = userListService.getActiveChats({ groupChatsMessages, groupChats, users });
+
+  // audio alerts
+  const unreadMessagesCountByChat = audioAlertEnabled
+    ? activeChats.map((chat) => ({
+      chatId: chat.chatId, unreadCounter: chat.unreadCounter,
+    }))
+    : null;
+
+  // push alerts
+  const unreadMessagesByChat = pushAlertEnabled
+    ? activeChats.filter(
+      (chat) => chat.unreadCounter > 0 && chat.chatId !== idChat,
+    ).map((chat) => {
+      const chatId = (chat.chatId === 'public') ? PUBLIC_CHAT_ID : chat.chatId;
+      return UnreadMessages.getUnreadMessages(chatId, groupChatsMessages);
+    })
+    : null;
+
+  return (
+    <ChatAlert
+      {...props}
+      newLayoutContextDispatch={newLayoutContextDispatch}
+      unreadMessagesCountByChat={unreadMessagesCountByChat}
+      unreadMessagesByChat={unreadMessagesByChat}
+      idChatOpen={idChat}
+    />
+  );
+};
+
+ChatAlertContainer.propTypes = propTypes;
+
+export default ChatAlertContainer;

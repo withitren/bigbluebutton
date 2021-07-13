@@ -3,7 +3,7 @@ import { FormattedTime, defineMessages, injectIntl } from 'react-intl';
 import PropTypes from 'prop-types';
 import cx from 'classnames';
 import UserAvatar from '/imports/ui/components/user-avatar/component';
-import SlowConnection from '/imports/ui/components/slow-connection/component';
+import Icon from '/imports/ui/components/connection-status/icon/component';
 import Switch from '/imports/ui/components/switch/component';
 import Service from '../service';
 import Modal from '/imports/ui/components/modal/simple/component';
@@ -30,6 +30,10 @@ const intlMessages = defineMessages({
     id: 'app.connection-status.more',
     description: 'More about conectivity issues',
   },
+  offline: {
+    id: 'app.connection-status.offline',
+    description: 'Offline user',
+  },
   dataSaving: {
     id: 'app.settings.dataSavingTab.description',
     description: 'Description of data saving',
@@ -41,6 +45,14 @@ const intlMessages = defineMessages({
   screenshare: {
     id: 'app.settings.dataSavingTab.screenShare',
     description: 'Screenshare data saving switch',
+  },
+  on: {
+    id: 'app.switch.onLabel',
+    description: 'label for toggle switch on state',
+  },
+  off: {
+    id: 'app.switch.offLabel',
+    description: 'label for toggle switch off state',
   },
 });
 
@@ -70,6 +82,7 @@ class ConnectionStatusComponent extends PureComponent {
 
     this.help = Service.getHelp();
     this.state = { dataSaving: props.dataSaving };
+    this.displaySettingsStatus = this.displaySettingsStatus.bind(this);
   }
 
   handleDataSavingChange(key) {
@@ -82,7 +95,10 @@ class ConnectionStatusComponent extends PureComponent {
     const { intl } = this.props;
 
     return (
-      <div className={styles.item}>
+      <div
+        className={styles.item}
+        data-test="connectionStatusItemEmpty"
+      >
         <div className={styles.left}>
           <div className={styles.name}>
             <div className={styles.text}>
@@ -91,6 +107,17 @@ class ConnectionStatusComponent extends PureComponent {
           </div>
         </div>
       </div>
+    );
+  }
+
+  displaySettingsStatus(status) {
+    const { intl } = this.props;
+
+    return (
+      <span className={styles.toggleLabel}>
+        {status ? intl.formatMessage(intlMessages.on)
+          : intl.formatMessage(intlMessages.off)}
+      </span>
     );
   }
 
@@ -107,10 +134,13 @@ class ConnectionStatusComponent extends PureComponent {
       const itemStyle = {};
       itemStyle[styles.even] = (index + 1) % 2 === 0;
 
+      const textStyle = {};
+      textStyle[styles.offline] = conn.offline;
       return (
         <div
           key={index}
           className={cx(styles.item, itemStyle)}
+          data-test="connectionStatusItemUser"
         >
           <div className={styles.left}>
             <div className={styles.avatar}>
@@ -126,12 +156,18 @@ class ConnectionStatusComponent extends PureComponent {
             </div>
 
             <div className={styles.name}>
-              <div className={styles.text}>
+              <div
+                className={cx(styles.text, textStyle)}
+                data-test={conn.offline ? "offlineUser" : null}
+              >
                 {conn.name}
+                {conn.offline ? ` (${intl.formatMessage(intlMessages.offline)})` : null}
               </div>
             </div>
             <div className={styles.status}>
-              <SlowConnection effectiveConnectionType={conn.level} />
+              <div className={styles.icon}>
+                <Icon level={conn.level} />
+              </div>
             </div>
           </div>
           <div className={styles.right}>
@@ -162,29 +198,53 @@ class ConnectionStatusComponent extends PureComponent {
         <div className={styles.description}>
           {intl.formatMessage(intlMessages.dataSaving)}
         </div>
-        <div className={styles.saving}>
-          <label className={styles.label}>
-            {intl.formatMessage(intlMessages.webcam)}
-          </label>
-          <Switch
-            icons={false}
-            defaultChecked={viewParticipantsWebcams}
-            onChange={() => this.handleDataSavingChange('viewParticipantsWebcams')}
-            ariaLabelledBy="webcam"
-            ariaLabel={intl.formatMessage(intlMessages.webcam)}
-          />
+
+        <div className={styles.row}>
+          <div className={styles.col} aria-hidden="true">
+            <div className={styles.formElement}>
+              <span className={styles.label}>
+                {intl.formatMessage(intlMessages.webcam)}
+              </span>
+            </div>
+          </div>
+          <div className={styles.col}>
+            <div className={cx(styles.formElement, styles.pullContentRight)}>
+              {this.displaySettingsStatus(viewParticipantsWebcams)}
+              <Switch
+                icons={false}
+                defaultChecked={viewParticipantsWebcams}
+                onChange={() => this.handleDataSavingChange('viewParticipantsWebcams')}
+                ariaLabelledBy="webcam"
+                ariaLabel={intl.formatMessage(intlMessages.webcam)}
+                data-test="dataSavingWebcams"
+                showToggleLabel={false}
+              />
+            </div>
+          </div>
         </div>
-        <div className={styles.saving}>
-          <label className={styles.label}>
-            {intl.formatMessage(intlMessages.screenshare)}
-          </label>
-          <Switch
-            icons={false}
-            defaultChecked={viewScreenshare}
-            onChange={() => this.handleDataSavingChange('viewScreenshare')}
-            ariaLabelledBy="screenshare"
-            ariaLabel={intl.formatMessage(intlMessages.screenshare)}
-          />
+
+        <div className={styles.row}>
+          <div className={styles.col} aria-hidden="true">
+            <div className={styles.formElement}>
+              <span className={styles.label}>
+                {intl.formatMessage(intlMessages.screenshare)}
+              </span>
+            </div>
+          </div>
+          <div className={styles.col}>
+            <div className={cx(styles.formElement, styles.pullContentRight)}>
+              {this.displaySettingsStatus(viewScreenshare)}
+              <Switch
+                icons={false}
+                defaultChecked={viewScreenshare}
+                onChange={() => this.handleDataSavingChange('viewScreenshare')}
+                ariaLabelledBy="screenshare"
+                ariaLabel={intl.formatMessage(intlMessages.screenshare)}
+                data-test="dataSavingScreenshare"
+                showToggleLabel={false}
+              />
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -213,7 +273,8 @@ class ConnectionStatusComponent extends PureComponent {
             </h2>
           </div>
           <div className={styles.description}>
-            {intl.formatMessage(intlMessages.description)}{' '}
+            {intl.formatMessage(intlMessages.description)}
+            {' '}
             {this.help
               && (
                 <a href={this.help} target="_blank" rel="noopener noreferrer">
