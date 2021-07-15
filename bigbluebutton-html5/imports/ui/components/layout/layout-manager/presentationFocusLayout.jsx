@@ -3,7 +3,7 @@ import { throttle, defaultsDeep } from 'lodash';
 import NewLayoutContext from '../context/context';
 import DEFAULT_VALUES from '../defaultValues';
 import { INITIAL_INPUT_STATE } from '../context/initState';
-import { DEVICE_TYPE, ACTIONS } from '../enums';
+import { DEVICE_TYPE, ACTIONS, PANELS } from '../enums';
 
 const min = (value1, value2) => (value1 <= value2 ? value1 : value2);
 const max = (value1, value2) => (value1 >= value2 ? value1 : value2);
@@ -107,6 +107,8 @@ class PresentationFocusLayout extends Component {
         }, INITIAL_INPUT_STATE),
       });
     } else {
+      const { sidebarContentPanel } = input.sidebarContent;
+
       newLayoutContextDispatch({
         type: ACTIONS.SET_LAYOUT_INPUT,
         value: defaultsDeep({
@@ -114,8 +116,10 @@ class PresentationFocusLayout extends Component {
             isOpen: true,
           },
           sidebarContent: {
-            isOpen: deviceType === DEVICE_TYPE.TABLET_LANDSCAPE
-              || deviceType === DEVICE_TYPE.DESKTOP,
+            isOpen: sidebarContentPanel !== PANELS.NONE
+              && (deviceType === DEVICE_TYPE.TABLET_LANDSCAPE
+                || deviceType === DEVICE_TYPE.DESKTOP),
+            sidebarContentPanel,
           },
           SidebarContentHorizontalResizer: {
             isOpen: false,
@@ -161,7 +165,7 @@ class PresentationFocusLayout extends Component {
     const { input, fontSize } = newLayoutContextState;
 
     const BASE_FONT_SIZE = 16;
-    const actionBarHeight = DEFAULT_VALUES.actionBarHeight / BASE_FONT_SIZE * fontSize;
+    const actionBarHeight = (DEFAULT_VALUES.actionBarHeight / BASE_FONT_SIZE) * fontSize;
 
     return {
       display: input.actionBar.hasActionBar,
@@ -234,7 +238,7 @@ class PresentationFocusLayout extends Component {
     return {
       top,
       left: sidebarNavLeft,
-      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 1,
+      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 2,
     };
   }
 
@@ -305,7 +309,7 @@ class PresentationFocusLayout extends Component {
       top,
       left: deviceType === DEVICE_TYPE.MOBILE
         || deviceType === DEVICE_TYPE.TABLET_PORTRAIT ? 0 : sidebarNavWidth,
-      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 2,
+      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 1,
     };
   }
 
@@ -396,9 +400,9 @@ class PresentationFocusLayout extends Component {
 
   calculatesMediaBounds(mediaAreaBounds) {
     const { newLayoutContextState } = this.props;
-    const { deviceType, input } = newLayoutContextState;
+    const { deviceType, input, fullscreen } = newLayoutContextState;
     const mediaBounds = {};
-    const { element: fullscreenElement } = input.fullscreen;
+    const { element: fullscreenElement } = fullscreen;
 
     if (fullscreenElement === 'Presentation' || fullscreenElement === 'Screenshare') {
       mediaBounds.width = this.mainWidth();
@@ -549,19 +553,13 @@ class PresentationFocusLayout extends Component {
         left: cameraDockBounds.left,
         tabOrder: 4,
         isDraggable: false,
-        isResizable: deviceType !== DEVICE_TYPE.MOBILE
-          && deviceType !== DEVICE_TYPE.TABLET,
+        resizableEdge: {
+          top: false,
+          right: false,
+          bottom: false,
+          left: false,
+        },
         zIndex: cameraDockBounds.zIndex,
-      },
-    });
-
-    newLayoutContextDispatch({
-      type: ACTIONS.SET_CAMERA_DOCK_RESIZABLE_EDGE,
-      value: {
-        top: true,
-        right: false,
-        bottom: false,
-        left: false,
       },
     });
 

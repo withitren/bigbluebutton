@@ -3,8 +3,10 @@ import _ from 'lodash';
 import NewLayoutContext from '../context/context';
 import DEFAULT_VALUES from '../defaultValues';
 import { INITIAL_INPUT_STATE } from '../context/initState';
-import { DEVICE_TYPE, ACTIONS } from '../enums';
+import { DEVICE_TYPE, ACTIONS, PANELS } from '../enums';
 
+const windowWidth = () => window.document.documentElement.clientWidth;
+const windowHeight = () => window.document.documentElement.clientHeight;
 const min = (value1, value2) => (value1 <= value2 ? value1 : value2);
 const max = (value1, value2) => (value1 >= value2 ? value1 : value2);
 
@@ -35,7 +37,8 @@ class SmartLayout extends Component {
     return newLayoutContextState.input !== nextProps.newLayoutContextState.input
       || newLayoutContextState.deviceType !== nextProps.newLayoutContextState.deviceType
       || newLayoutContextState.layoutLoaded !== nextProps.newLayoutContextState.layoutLoaded
-      || newLayoutContextState.fontSize !== nextProps.newLayoutContextState.fontSize;
+      || newLayoutContextState.fontSize !== nextProps.newLayoutContextState.fontSize
+      || newLayoutContextState.fullscreen !== nextProps.newLayoutContextState.fullscreen;
   }
 
   componentDidUpdate(prevProps) {
@@ -108,6 +111,8 @@ class SmartLayout extends Component {
         }, INITIAL_INPUT_STATE),
       });
     } else {
+      const { sidebarContentPanel } = input.sidebarContent;
+
       newLayoutContextDispatch({
         type: ACTIONS.SET_LAYOUT_INPUT,
         value: _.defaultsDeep({
@@ -115,8 +120,10 @@ class SmartLayout extends Component {
             isOpen: true,
           },
           sidebarContent: {
-            isOpen: deviceType === DEVICE_TYPE.TABLET_LANDSCAPE
-              || deviceType === DEVICE_TYPE.DESKTOP,
+            isOpen: sidebarContentPanel !== PANELS.NONE
+              && (deviceType === DEVICE_TYPE.TABLET_LANDSCAPE
+                || deviceType === DEVICE_TYPE.DESKTOP),
+            sidebarContentPanel,
           },
           SidebarContentHorizontalResizer: {
             isOpen: false,
@@ -162,7 +169,7 @@ class SmartLayout extends Component {
     const { input, fontSize } = newLayoutContextState;
 
     const BASE_FONT_SIZE = 16;
-    const actionBarHeight = DEFAULT_VALUES.actionBarHeight / BASE_FONT_SIZE * fontSize;
+    const actionBarHeight = (DEFAULT_VALUES.actionBarHeight / BASE_FONT_SIZE) * fontSize;
 
     return {
       display: input.actionBar.hasActionBar,
@@ -235,7 +242,7 @@ class SmartLayout extends Component {
     return {
       top,
       left: sidebarNavLeft,
-      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 1,
+      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 2,
     };
   }
 
@@ -304,7 +311,7 @@ class SmartLayout extends Component {
       top,
       left: deviceType === DEVICE_TYPE.MOBILE
         || deviceType === DEVICE_TYPE.TABLET_PORTRAIT ? 0 : sidebarNavWidth,
-      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 2,
+      zIndex: deviceType === DEVICE_TYPE.MOBILE ? 11 : 1,
     };
   }
 
@@ -345,7 +352,7 @@ class SmartLayout extends Component {
 
   calculatesCameraDockBounds(mediaAreaBounds, mediaBounds) {
     const { newLayoutContextState } = this.props;
-    const { input } = newLayoutContextState;
+    const { input, fullscreen } = newLayoutContextState;
 
     const cameraDockBounds = {};
 
@@ -368,6 +375,18 @@ class SmartLayout extends Component {
 
       cameraDockBounds.minWidth = DEFAULT_VALUES.cameraDockMinWidth;
       cameraDockBounds.minHeight = DEFAULT_VALUES.cameraDockMinHeight;
+
+      if (fullscreen.group === 'webcams') {
+        cameraDockBounds.width = windowWidth();
+        cameraDockBounds.minWidth = windowWidth();
+        cameraDockBounds.maxWidth = windowWidth();
+        cameraDockBounds.height = windowHeight();
+        cameraDockBounds.minHeight = windowHeight();
+        cameraDockBounds.maxHeight = windowHeight();
+        cameraDockBounds.top = 0;
+        cameraDockBounds.left = 0;
+        cameraDockBounds.zIndex = 99;
+      }
     } else {
       cameraDockBounds.width = 0;
       cameraDockBounds.height = 0;
@@ -408,9 +427,9 @@ class SmartLayout extends Component {
 
   calculatesMediaBounds(mediaAreaBounds, slideSize) {
     const { newLayoutContextState } = this.props;
-    const { input } = newLayoutContextState;
+    const { input, fullscreen } = newLayoutContextState;
     const mediaBounds = {};
-    const { element: fullscreenElement } = input.fullscreen;
+    const { element: fullscreenElement } = fullscreen;
 
     // TODO Adicionar min e max para a apresentação
 
@@ -587,7 +606,12 @@ class SmartLayout extends Component {
         left: cameraDockBounds.left,
         tabOrder: 4,
         isDraggable: false,
-        isResizable: false,
+        resizableEdge: {
+          top: false,
+          right: false,
+          bottom: false,
+          left: false,
+        },
         zIndex: cameraDockBounds.zIndex,
       },
     });
